@@ -1,0 +1,90 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
+/*
+ * This is a generated file
+ * Do not edit manually.
+ */
+
+/**
+ * External Identity Provider (IdP) configuration details.
+ */
+export interface IdentityProvider {
+
+  /**
+   * Issuer URL for the external Identity Provider.
+   */
+  issuer?: string;
+
+  /**
+   * Expected audience for tokens issued by the external Identity Provider.
+   */
+  audience?: string;
+
+  /**
+   * Remote URL for the external Identity Provider JWKS endpoint.
+   */
+  jwksUrl?: string;
+
+  /**
+   * Remote URL for the external Identity Provider authorize endpoint.
+   */
+  authorizeUrl?: string;
+
+  /**
+   * Remote URL for the external Identity Provider token endpoint.
+   */
+  tokenUrl?: string;
+
+  /**
+   * Client Authentication method used by Clients to authenticate to the
+   * Authorization Server when using the Token Endpoint. If no method is
+   * registered, the default method is client_secret_basic.
+   */
+  tokenAuthMethod?: 'client_secret_basic' | 'client_secret_post';
+
+  /**
+   * Remote URL for the external Identity Provider userinfo endpoint.
+   */
+  userInfoUrl?: string;
+
+  /**
+   * Optional userinfo mode. Defaults to standard OIDC userinfo semantics.
+   */
+  userInfoMode?: 'oidc' | 'gcip';
+
+  /**
+   * Optional API key used by custom userinfo modes such as Google Cloud
+   * Identity Platform.
+   */
+  userInfoApiKey?: string;
+
+  /**
+   * External Identity Provider client ID.
+   */
+  clientId?: string;
+
+  /**
+   * External Identity Provider client secret.
+   */
+  clientSecret?: string;
+
+  /**
+   * Optional flag to use PKCE in the token request.
+   */
+  usePkce?: boolean;
+
+  /**
+   * Optional flag to use the subject field instead of the email field.
+   */
+  useSubject?: boolean;
+
+  /**
+   * External credential field used to identify the user.
+   */
+  identitySource?: 'email' | 'subject' | 'fhir-user';
+
+  /**
+   * Medplum identity mapping target.
+   */
+  identityMappingMode?: 'user-email' | 'user-external-id' | 'project-membership-external-id' | 'project-membership-profile';
+}

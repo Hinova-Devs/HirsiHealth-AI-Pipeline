@@ -1,0 +1,263 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
+/*
+ * This is a generated file
+ * Do not edit manually.
+ */
+
+import type { Attachment } from './Attachment.d.ts';
+import type { Extension } from './Extension.d.ts';
+import type { IdentityProvider } from './IdentityProvider.d.ts';
+import type { Meta } from './Meta.d.ts';
+import type { Narrative } from './Narrative.d.ts';
+import type { Resource } from './Resource.d.ts';
+
+/**
+ * Medplum client application for automated access.
+ */
+export interface ClientApplication {
+
+  /**
+   * This is a ClientApplication resource
+   */
+  readonly resourceType: 'ClientApplication';
+
+  /**
+   * The logical id of the resource, as used in the URL for the resource.
+   * Once assigned, this value never changes.
+   */
+  id?: string;
+
+  /**
+   * The metadata about the resource. This is content that is maintained by
+   * the infrastructure. Changes to the content might not always be
+   * associated with version changes to the resource.
+   */
+  meta?: Meta;
+
+  /**
+   * A reference to a set of rules that were followed when the resource was
+   * constructed, and which must be understood when processing the content.
+   * Often, this is a reference to an implementation guide that defines the
+   * special rules along with other profiles etc.
+   */
+  implicitRules?: string;
+
+  /**
+   * The base language in which the resource is written.
+   */
+  language?: string;
+
+  /**
+   * A human-readable narrative that contains a summary of the resource and
+   * can be used to represent the content of the resource to a human. The
+   * narrative need not encode all the structured data, but is required to
+   * contain sufficient detail to make it &quot;clinically safe&quot; for a human to
+   * just read the narrative. Resource definitions may define what content
+   * should be represented in the narrative to ensure clinical safety.
+   */
+  text?: Narrative;
+
+  /**
+   * These resources do not have an independent existence apart from the
+   * resource that contains them - they cannot be identified independently,
+   * and nor can they have their own independent transaction scope.
+   */
+  contained?: Resource[];
+
+  /**
+   * May be used to represent additional information that is not part of
+   * the basic definition of the resource. To make the use of extensions
+   * safe and manageable, there is a strict set of governance  applied to
+   * the definition and use of extensions. Though any implementer can
+   * define an extension, there is a set of requirements that SHALL be met
+   * as part of the definition of the extension.
+   */
+  extension?: Extension[];
+
+  /**
+   * May be used to represent additional information that is not part of
+   * the basic definition of the resource and that modifies the
+   * understanding of the element that contains it and/or the understanding
+   * of the containing element's descendants. Usually modifier elements
+   * provide negation or qualification. To make the use of extensions safe
+   * and manageable, there is a strict set of governance applied to the
+   * definition and use of extensions. Though any implementer is allowed to
+   * define an extension, there is a set of requirements that SHALL be met
+   * as part of the definition of the extension. Applications processing a
+   * resource are required to check for modifier extensions.
+   *
+   * Modifier extensions SHALL NOT change the meaning of any elements on
+   * Resource or DomainResource (including cannot change the meaning of
+   * modifierExtension itself).
+   */
+  modifierExtension?: Extension[];
+
+  /**
+   * The client application status. The status is active by default. The
+   * status can be set to error to indicate that the client application is
+   * not working properly. The status can be set to off to indicate that
+   * the client application is no longer in use.
+   */
+  status?: 'active' | 'off' | 'error';
+
+  /**
+   * A name associated with the ClientApplication.
+   */
+  name?: string;
+
+  /**
+   * A summary, characterization or explanation of the ClientApplication.
+   */
+  description?: string;
+
+  /**
+   * Custom values for the Log In form.
+   */
+  signInForm?: ClientApplicationSignInForm;
+
+  /**
+   * Client secret string used to verify the identity of a client.
+   */
+  secret?: string;
+
+  /**
+   * Old version of the client secret that is being rotated out.  Instances
+   * of the client using this value should update to use the value in
+   * ClientApplication.secret
+   */
+  retiringSecret?: string;
+
+  /**
+   * Optional JWKS URI for public key verification of JWTs issued by the
+   * authorization server (client_secret_jwt).
+   */
+  jwksUri?: string;
+
+  /**
+   * Optional redirect URI array used when redirecting a client back to the
+   * client application.
+   */
+  redirectUris?: string[];
+
+  /**
+   * Optional launch URI for SMART EHR launch sequence.
+   */
+  launchUri?: string;
+
+  /**
+   * Optional array of identifier systems to use in SMART launch context.
+   * When specified, the resource's identifier with the matching system
+   * will be included in the SmartAppLaunch resource's reference and
+   * returned to the SMART app in the token response.
+   */
+  launchIdentifierSystems?: ClientApplicationLaunchIdentifierSystems[];
+
+  /**
+   * Flag to make PKCE optional for this client application. PKCE is
+   * required by default for compliance with Smart App Launch. It can be
+   * disabled for compatibility with legacy client applications.
+   */
+  pkceOptional?: boolean;
+
+  /**
+   * Optional external Identity Provider (IdP) for the client application.
+   */
+  identityProvider?: IdentityProvider;
+
+  /**
+   * Optional configuration to set the access token duration
+   */
+  accessTokenLifetime?: string;
+
+  /**
+   * Optional configuration to set the refresh token duration
+   */
+  refreshTokenLifetime?: string;
+
+  /**
+   * Optional CORS allowed origin for the client application.  By default,
+   * all origins are allowed.
+   */
+  allowedOrigin?: string[];
+
+  /**
+   * Optional OAuth grant type for the client application. This specifies
+   * the allowed grant types for the client application.
+   */
+  grantType?: string[];
+
+  /**
+   * Optional OAuth response type for the client application. This
+   * specifies the allowed response types for the client application.
+   */
+  responseType?: string[];
+
+  /**
+   * Optional default OAuth scope for the client application. This scope is
+   * used when the client application does not specify a scope in the
+   * authorization request.
+   */
+  defaultScope?: string[];
+
+  /**
+   * Optional PEM-formatted certificates that are allowed to authenticate
+   * to this service via mutual TLS. Supports both Certificate Authorities
+   * (CAs) and self-signed certificates. Multiple certificates can be
+   * included.
+   */
+  certificateTrustStore?: string;
+
+  /**
+   * @deprecated This field is deprecated. Use redirectUris instead.
+   */
+  redirectUri?: string;
+}
+
+/**
+ * Optional array of identifier systems to use in SMART launch context.
+ * When specified, the resource's identifier with the matching system
+ * will be included in the SmartAppLaunch resource's reference and
+ * returned to the SMART app in the token response.
+ */
+export interface ClientApplicationLaunchIdentifierSystems {
+
+  /**
+   * The resource type for which to use the identifier system (e.g.,
+   * 'Patient', 'Encounter').
+   */
+  resourceType: string;
+
+  /**
+   * The identifier system URI to use for the specified resource type.
+   */
+  system: string;
+}
+
+/**
+ * Custom values for the Log In form.
+ */
+export interface ClientApplicationSignInForm {
+
+  /**
+   * Welcome string for the Log In Form.
+   */
+  welcomeString?: string;
+
+  /**
+   * Logo for the Log In Form.
+   */
+  logo?: Attachment;
+
+  /**
+   * Whether the Log In Form prompts the user to select OAuth and SMART
+   * scopes. When set, this value is authoritative. When unset, the scope
+   * selection screen is shown if the authorization request asks for any
+   * scope other than &quot;openid&quot;. Setting this to false suppresses the prompt
+   * and grants the client the full scope that it requested. Note that
+   * granular scope selection is required for patient-facing apps under ONC
+   * 170.315(g)(10), so this should only be disabled for provider-facing or
+   * trusted first-party clients.
+   */
+  showScopeSelection?: boolean;
+}
