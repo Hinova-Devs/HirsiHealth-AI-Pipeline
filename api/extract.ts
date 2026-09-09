@@ -15,7 +15,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { timingSafeEqual } from 'node:crypto';
 import { MedplumClient } from '@medplum/core';
 import type { DocumentReference, Task, TaskOutput } from '@medplum/fhirtypes';
-import { GoogleGenerativeAI, type ResponseSchema } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 
 // ============================================================================
@@ -23,15 +23,12 @@ import Anthropic from '@anthropic-ai/sdk';
 //
 // These are plain, portable JSON Schema objects (lowercase `type` strings),
 // reused verbatim by both providers below:
-//  - Gemini's `responseSchema` uses the same OpenAPI-3.0-subset shape, and
-//    its `SchemaType` enum's underlying values are these same lowercase
-//    strings ("object", "string", ...) — confirmed against the installed
-//    @google/generative-ai types. The `as unknown as ResponseSchema` casts
-//    at each call site exist only to satisfy the SDK's nominal enum typing,
-//    not because the runtime shape differs.
+//  - Gemini's `GenerateContentConfig.responseSchema` field is typed
+//    `SchemaUnion = Schema | unknown` in the current @google/genai SDK, so
+//    these plain JSON Schema objects are assignable with no cast needed.
 //  - Claude's `Tool.InputSchema` is `{ type: 'object'; properties?: unknown;
 //    required?: string[]; [k: string]: unknown }` — structurally open enough
-//    to accept these objects directly, modulo the same top-level cast.
+//    to accept these objects directly, modulo a top-level cast.
 //
 // Every extracted field carries its own "confidence" (high/medium/low)
 // because source documents are often handwritten, partially illegible, or
@@ -242,65 +239,75 @@ function schemaFor(documentType: string): Record<string, unknown> {
 // ── Gemini ───────────────────────────────────────────────────────────────
 
 class GeminiProvider implements DocPipelineProvider {
-  private readonly genAI: GoogleGenerativeAI;
+  private readonly ai: GoogleGenAI;
 
   constructor(apiKey: string) {
-    this.genAI = new GoogleGenerativeAI(apiKey);
+    this.ai = new GoogleGenAI({ apiKey });
   }
 
   private filePart(fileBase64: string, mimeType: string) {
     return { inlineData: { mimeType, data: fileBase64 } };
   }
 
+  /** `response.text` is a getter (not a call) in @google/genai, and can be `undefined`. */
+  private textOf(response: { text?: string }): string {
+    if (!response.text) {
+      throw new Error('Gemini returned an empty response.');
+    }
+    return response.text;
+  }
+
   async classify(fileBase64: string, mimeType: string): Promise<ClassifyResult> {
-    const model = this.genAI.getGenerativeModel({
+    const response = await this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
-      generationConfig: {
+      contents: [
+        this.filePart(fileBase64, mimeType),
+        {
+          text:
+            'Classify this medical document. Determine which category it belongs to and whether ' +
+            'it is clear and complete enough to extract data from.',
+        },
+      ],
+      config: {
         responseMimeType: 'application/json',
-        responseSchema: classifySchema as unknown as ResponseSchema,
+        responseSchema: classifySchema,
       },
     });
-    const result = await model.generateContent([
-      this.filePart(fileBase64, mimeType),
-      {
-        text:
-          'Classify this medical document. Determine which category it belongs to and whether ' +
-          'it is clear and complete enough to extract data from.',
-      },
-    ]);
-    return JSON.parse(result.response.text()) as ClassifyResult;
+    return JSON.parse(this.textOf(response)) as ClassifyResult;
   }
 
   async extract(fileBase64: string, mimeType: string, documentType: string): Promise<Record<string, unknown>> {
     const schema = schemaFor(documentType);
-    const model = this.genAI.getGenerativeModel({
+    const response = await this.ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      generationConfig: {
+      contents: [
+        this.filePart(fileBase64, mimeType),
+        { text: `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document.` },
+      ],
+      config: {
         responseMimeType: 'application/json',
-        responseSchema: schema as unknown as ResponseSchema,
+        responseSchema: schema,
       },
     });
-    const result = await model.generateContent([
-      this.filePart(fileBase64, mimeType),
-      { text: `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document.` },
-    ]);
-    return JSON.parse(result.response.text()) as Record<string, unknown>;
+    return JSON.parse(this.textOf(response)) as Record<string, unknown>;
   }
 
   async explain(fileBase64: string, mimeType: string, extractedData: Record<string, unknown>): Promise<string> {
-    const model = this.genAI.getGenerativeModel({
+    const response = await this.ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      systemInstruction: EXPLAIN_SYSTEM_INSTRUCTION,
-    });
-    const result = await model.generateContent([
-      this.filePart(fileBase64, mimeType),
-      {
-        text:
-          `Here is the structured data extracted from this document:\n\n${JSON.stringify(extractedData, null, 2)}\n\n` +
-          'Explain this to the patient.',
+      contents: [
+        this.filePart(fileBase64, mimeType),
+        {
+          text:
+            `Here is the structured data extracted from this document:\n\n${JSON.stringify(extractedData, null, 2)}\n\n` +
+            'Explain this to the patient.',
+        },
+      ],
+      config: {
+        systemInstruction: EXPLAIN_SYSTEM_INSTRUCTION,
       },
-    ]);
-    return result.response.text();
+    });
+    return this.textOf(response);
   }
 }
 
