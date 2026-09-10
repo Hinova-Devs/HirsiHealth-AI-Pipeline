@@ -526,7 +526,13 @@ async function patchDocStatus(
     { op: 'add', path: '/docStatus', value: docStatus },
   ]);
 }
-
+async function readRawBody(req: VercelRequest): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 // ============================================================================
 // Handler
 // ============================================================================
@@ -540,13 +546,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   // ── STEP 2: parse the payload ───────────────────────────────────────────
-  let payload: unknown = req.body;
-  if (typeof payload === 'string') {
-    try { payload = JSON.parse(payload); } catch { payload = undefined; }
-  } else if (Buffer.isBuffer(payload)) {
-    try { payload = JSON.parse(payload.toString('utf8')); } catch { payload = undefined; }
+ let payload: unknown = req.body;
+if (payload === undefined || payload === null) {
+  try {
+    const raw = await readRawBody(req);
+    payload = raw ? JSON.parse(raw) : undefined;
+  } catch {
+    payload = undefined;
   }
-  console.log('[extract] payload type:', typeof req.body, 'resourceType:', (payload as any)?.resourceType);
+} else if (typeof payload === 'string') {
+  try { payload = JSON.parse(payload); } catch { payload = undefined; }
+} else if (Buffer.isBuffer(payload)) {
+  try { payload = JSON.parse(payload.toString('utf8')); } catch { payload = undefined; }
+}
+console.log('[extract] payload type:', typeof req.body, 'resourceType:', (payload as any)?.resourceType);
   if (
     !payload ||
     typeof payload !== 'object' ||
