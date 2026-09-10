@@ -259,7 +259,7 @@ class GeminiProvider implements DocPipelineProvider {
 
   async classify(fileBase64: string, mimeType: string): Promise<ClassifyResult> {
     const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.1-flash-lite',
       contents: [
         this.filePart(fileBase64, mimeType),
         {
@@ -279,7 +279,7 @@ class GeminiProvider implements DocPipelineProvider {
   async extract(fileBase64: string, mimeType: string, documentType: string): Promise<Record<string, unknown>> {
     const schema = schemaFor(documentType);
     const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: [
         this.filePart(fileBase64, mimeType),
         { text: `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document.` },
@@ -294,7 +294,7 @@ class GeminiProvider implements DocPipelineProvider {
 
   async explain(fileBase64: string, mimeType: string, extractedData: Record<string, unknown>): Promise<string> {
     const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: [
         this.filePart(fileBase64, mimeType),
         {
