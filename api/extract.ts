@@ -540,7 +540,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   // ── STEP 2: parse the payload ───────────────────────────────────────────
-  const payload = req.body as unknown;
+  let payload: unknown = req.body;
+  if (typeof payload === 'string') {
+    try { payload = JSON.parse(payload); } catch { payload = undefined; }
+  } else if (Buffer.isBuffer(payload)) {
+    try { payload = JSON.parse(payload.toString('utf8')); } catch { payload = undefined; }
+  }
+  console.log('[extract] payload type:', typeof req.body, 'resourceType:', (payload as any)?.resourceType);
   if (
     !payload ||
     typeof payload !== 'object' ||
