@@ -259,7 +259,7 @@ class GeminiProvider implements DocPipelineProvider {
 
   async classify(fileBase64: string, mimeType: string): Promise<ClassifyResult> {
     const response = await this.ai.models.generateContent({
-      model: 'gemini-3.1-flash-lite',
+      model: 'gemini-2.5-flash-lite',
       contents: [
         this.filePart(fileBase64, mimeType),
         {
@@ -279,7 +279,7 @@ class GeminiProvider implements DocPipelineProvider {
   async extract(fileBase64: string, mimeType: string, documentType: string): Promise<Record<string, unknown>> {
     const schema = schemaFor(documentType);
     const response = await this.ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: [
         this.filePart(fileBase64, mimeType),
         { text: `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document.` },
@@ -294,7 +294,7 @@ class GeminiProvider implements DocPipelineProvider {
 
   async explain(fileBase64: string, mimeType: string, extractedData: Record<string, unknown>): Promise<string> {
     const response = await this.ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: [
         this.filePart(fileBase64, mimeType),
         {
@@ -527,7 +527,9 @@ async function patchDocStatus(
   ]);
 }
 async function readRawBody(req: VercelRequest): Promise<string> {
-  const chunks: Buffer[] = [];
+  // Uint8Array[], not Buffer[] — Buffer.concat's parameter is typed against
+  // Uint8Array<ArrayBuffer> and Buffer's ArrayBufferLike does not narrow to it.
+  const chunks: Uint8Array[] = [];
   for await (const chunk of req) {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
   }

@@ -1,10 +1,10 @@
 {
   "name": "hersihealth-ai-pipeline",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Medplum webhook that classifies, extracts and explains patient documents.",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "typecheck": "tsc --noEmit",
+    "setup-subscription": "node --env-file=.env --experimental-strip-types scripts/setup-subscription.ts"
   },
   "keywords": [],
   "author": "",
