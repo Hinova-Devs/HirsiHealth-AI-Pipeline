@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Medplum webhook that classifies, extracts and explains patient documents.",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "setup-subscription": "node --env-file=.env --experimental-strip-types scripts/setup-subscription.ts"
   },
   "keywords": [],

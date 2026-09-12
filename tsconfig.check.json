@@ -1,0 +1,28 @@
+{
+  // Typecheck-only config, deliberately NOT named tsconfig.json.
+  //
+  // @vercel/node picks up a tsconfig.json and compiles api/*.ts with it. A
+  // config here that emits ESM ("module": "preserve"/"esnext") puts real import
+  // statements into api/extract.js, and since package.json has no
+  // "type": "module" the function dies at cold start with
+  // "Cannot use import statement outside a module".
+  //
+  // With no tsconfig.json present, Vercel uses its own defaults (CommonJS),
+  // which is what has always worked in production. Keep it that way.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["api", "scripts"]
+}
