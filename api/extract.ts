@@ -461,6 +461,21 @@ export function parseJsonObject(text: string): Record<string, unknown> {
 }
 
 /**
+ * Restates the JSON Schema in the prompt.
+ *
+ * `response_format` is only a hint here — OpenRouter routes to whichever
+ * provider is cheapest/available, and some reject it outright. Putting the
+ * schema in the text means the model still knows the exact shape when the hint
+ * had to be dropped.
+ */
+function schemaPrompt(schema: Record<string, unknown>): string {
+  return (
+    'Reply with a single JSON object and nothing else - no prose, no markdown ' +
+    `fences. It must match this JSON Schema:\n\n${JSON.stringify(schema)}`
+  );
+}
+
+/**
  * OpenRouter, via its OpenAI-compatible chat-completions endpoint.
  *
  * Uses plain `fetch` rather than the OpenAI SDK — three calls do not justify
@@ -486,6 +501,20 @@ class OpenRouterProvider implements DocPipelineProvider {
       };
     }
     return { type: 'image_url', image_url: { url: `data:${mimeType};base64,${fileBase64}` } };
+  }
+
+  private post(body: Record<string, unknown>): Promise<Response> {
+    return fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        // Optional attribution headers OpenRouter uses for its dashboards.
+        'HTTP-Referer': 'https://hersihealth.so',
+        'X-Title': 'HersiHealth',
+      },
+      body: JSON.stringify(body),
+    });
   }
 
   private async chat(params: {
@@ -525,17 +554,21 @@ class OpenRouterProvider implements DocPipelineProvider {
       body.plugins = [{ id: 'file-parser', pdf: { engine: 'pdf-text' } }];
     }
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-        // Optional attribution headers OpenRouter uses for its dashboards.
-        'HTTP-Referer': 'https://hersihealth.so',
-        'X-Title': 'HersiHealth',
-      },
-      body: JSON.stringify(body),
-    });
+    let response = await this.post(body);
+
+    // OpenRouter picks a provider per request, and not all of them accept
+    // response_format (Novita, for one, answers 400 "structured outputs not
+    // support"). Rather than pinning routing to the few that do, drop the hint
+    // and retry: the schema is in the prompt and parseJsonObject() copes with
+    // whatever wrapping comes back.
+    if (!response.ok && body.response_format) {
+      const detail = await response.text();
+      if (!/structured output|response_format|json_schema/i.test(detail)) {
+        throw new Error(`OpenRouter ${response.status}: ${detail.slice(0, 400)}`);
+      }
+      delete body.response_format;
+      response = await this.post(body);
+    }
 
     if (!response.ok) {
       throw new Error(`OpenRouter ${response.status}: ${(await response.text()).slice(0, 400)}`);
@@ -566,7 +599,9 @@ class OpenRouterProvider implements DocPipelineProvider {
       schema: { name: 'classify_document', schema: classifySchema },
       text:
         'Classify this medical document. Determine which category it belongs to and whether ' +
-        'it is clear and complete enough to extract data from. Reply with JSON only.',
+        'it is clear and complete enough to extract data from.' +
+        '\n\n' +
+        schemaPrompt(classifySchema),
     });
     return parseJsonObject(text) as unknown as ClassifyResult;
   }
@@ -576,14 +611,16 @@ class OpenRouterProvider implements DocPipelineProvider {
     mimeType: string,
     documentType: string,
   ): Promise<Record<string, unknown>> {
+    const schema = schemaFor(documentType);
     const text = await this.chat({
       fileBase64,
       mimeType,
       maxTokens: 4096,
-      schema: { name: `extract_${documentType}`, schema: schemaFor(documentType) },
+      schema: { name: `extract_${documentType}`, schema },
       text:
-        `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document. ` +
-        'Reply with JSON only.',
+        `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document.` +
+        '\n\n' +
+        schemaPrompt(schema),
     });
     return parseJsonObject(text);
   }
