@@ -61,14 +61,24 @@ is deployed but nothing ever calls it.
 ## Checks
 
 ```
-npm run typecheck
+npm run typecheck   # types
+npm run check       # parseJsonObject self-check
 ```
 
 ## Notes
 
-- `AI_PROVIDER` selects `gemini` (default) or `claude`. The key for the
-  unselected provider can stay empty — `getProvider()` only throws for the one
+- `AI_PROVIDER` selects `gemini`, `claude` or `openrouter`. Credentials for the
+  unselected providers can stay empty — `getProvider()` only throws for the one
   actually in use.
+- **OpenRouter and patient data.** Models with a `:free` suffix route to
+  providers that may retain and train on what you send, and what you send here
+  is a patient's lab slip. Use free models for your own test documents only; for
+  real uploads use a paid model or turn on Zero Data Retention in OpenRouter's
+  privacy settings.
+- Model ids get retired. `OPENROUTER_MODEL` is deliberately required rather than
+  defaulted, so a dead id fails at setup instead of mid-pipeline. Gemini ids are
+  pinned in `GeminiProvider` and need re-pinning when Google retires a version —
+  which is exactly how the 2.5 models broke.
 - The Subscription is registered for `create` only. An update-triggered
   subscription would fire on the pipeline's own `docStatus` PATCH and loop
   forever.

@@ -259,7 +259,7 @@ class GeminiProvider implements DocPipelineProvider {
 
   async classify(fileBase64: string, mimeType: string): Promise<ClassifyResult> {
     const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.5-flash-lite',
       contents: [
         this.filePart(fileBase64, mimeType),
         {
@@ -279,7 +279,7 @@ class GeminiProvider implements DocPipelineProvider {
   async extract(fileBase64: string, mimeType: string, documentType: string): Promise<Record<string, unknown>> {
     const schema = schemaFor(documentType);
     const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: [
         this.filePart(fileBase64, mimeType),
         { text: `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document.` },
@@ -294,7 +294,7 @@ class GeminiProvider implements DocPipelineProvider {
 
   async explain(fileBase64: string, mimeType: string, extractedData: Record<string, unknown>): Promise<string> {
     const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: [
         this.filePart(fileBase64, mimeType),
         {
@@ -436,6 +436,176 @@ class ClaudeProvider implements DocPipelineProvider {
 }
 
 /**
+ * Pulls the first JSON object out of a model response.
+ *
+ * Exported for the self-check. Models that honour `response_format` return
+ * bare JSON, but weaker ones (the free tier especially) wrap it in a ```json
+ * fence or bracket it with prose, and a hard JSON.parse would throw on both.
+ */
+export function parseJsonObject(text: string): Record<string, unknown> {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = (fenced ? fenced[1] : text).trim();
+
+  // Slice to the outermost braces so leading/trailing commentary is dropped.
+  const start = body.indexOf('{');
+  const end = body.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error(`Model did not return a JSON object. Got: ${text.slice(0, 200)}`);
+  }
+
+  // The slice always starts with { and ends with }, so JSON.parse either
+  // throws or yields an object — no further shape check is reachable. A model
+  // that wrapped its answer in an array lands here as the inner object, which
+  // is the recovery we want.
+  return JSON.parse(body.slice(start, end + 1)) as Record<string, unknown>;
+}
+
+/**
+ * OpenRouter, via its OpenAI-compatible chat-completions endpoint.
+ *
+ * Uses plain `fetch` rather than the OpenAI SDK — three calls do not justify
+ * another dependency. The model is not hardcoded: pick one that accepts images
+ * at https://openrouter.ai/models?modality=text+image-%3Etext and set
+ * OPENROUTER_MODEL, because model ids get retired (which is how we got here).
+ */
+class OpenRouterProvider implements DocPipelineProvider {
+  private readonly apiKey: string;
+  private readonly model: string;
+
+  constructor(apiKey: string, model: string) {
+    this.apiKey = apiKey;
+    this.model = model;
+  }
+
+  /** Images go in as data URIs; PDFs use OpenRouter's file-parser plugin. */
+  private filePart(fileBase64: string, mimeType: string): Record<string, unknown> {
+    if (mimeType === 'application/pdf') {
+      return {
+        type: 'file',
+        file: { filename: 'document.pdf', file_data: `data:application/pdf;base64,${fileBase64}` },
+      };
+    }
+    return { type: 'image_url', image_url: { url: `data:${mimeType};base64,${fileBase64}` } };
+  }
+
+  private async chat(params: {
+    fileBase64: string;
+    mimeType: string;
+    text: string;
+    system?: string;
+    schema?: { name: string; schema: Record<string, unknown> };
+    maxTokens: number;
+  }): Promise<string> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      max_tokens: params.maxTokens,
+      messages: [
+        ...(params.system ? [{ role: 'system', content: params.system }] : []),
+        {
+          role: 'user',
+          content: [
+            this.filePart(params.fileBase64, params.mimeType),
+            { type: 'text', text: params.text },
+          ],
+        },
+      ],
+    };
+
+    if (params.schema) {
+      // strict:false — the pipeline's schemas do not carry the
+      // additionalProperties:false / fully-required shape strict mode demands,
+      // and parseJsonObject() covers models that ignore the field entirely.
+      body.response_format = {
+        type: 'json_schema',
+        json_schema: { name: params.schema.name, strict: false, schema: params.schema.schema },
+      };
+    }
+
+    if (params.mimeType === 'application/pdf') {
+      body.plugins = [{ id: 'file-parser', pdf: { engine: 'pdf-text' } }];
+    }
+
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        // Optional attribution headers OpenRouter uses for its dashboards.
+        'HTTP-Referer': 'https://hersihealth.so',
+        'X-Title': 'HersiHealth',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenRouter ${response.status}: ${(await response.text()).slice(0, 400)}`);
+    }
+
+    const json = (await response.json()) as {
+      choices?: { message?: { content?: string } }[];
+      error?: { message?: string };
+    };
+
+    // A 200 can still carry a provider-level error (rate limit, no capacity).
+    if (json.error) {
+      throw new Error(`OpenRouter: ${json.error.message ?? 'unknown error'}`);
+    }
+
+    const content = json.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) {
+      throw new Error('OpenRouter returned an empty response.');
+    }
+    return content;
+  }
+
+  async classify(fileBase64: string, mimeType: string): Promise<ClassifyResult> {
+    const text = await this.chat({
+      fileBase64,
+      mimeType,
+      maxTokens: 1024,
+      schema: { name: 'classify_document', schema: classifySchema },
+      text:
+        'Classify this medical document. Determine which category it belongs to and whether ' +
+        'it is clear and complete enough to extract data from. Reply with JSON only.',
+    });
+    return parseJsonObject(text) as unknown as ClassifyResult;
+  }
+
+  async extract(
+    fileBase64: string,
+    mimeType: string,
+    documentType: string,
+  ): Promise<Record<string, unknown>> {
+    const text = await this.chat({
+      fileBase64,
+      mimeType,
+      maxTokens: 4096,
+      schema: { name: `extract_${documentType}`, schema: schemaFor(documentType) },
+      text:
+        `Extract the structured data from this ${documentType.replace(/_/g, ' ')} document. ` +
+        'Reply with JSON only.',
+    });
+    return parseJsonObject(text);
+  }
+
+  async explain(
+    fileBase64: string,
+    mimeType: string,
+    extractedData: Record<string, unknown>,
+  ): Promise<string> {
+    return this.chat({
+      fileBase64,
+      mimeType,
+      maxTokens: 512,
+      system: EXPLAIN_SYSTEM_INSTRUCTION,
+      text:
+        `Here is the structured data extracted from this document:\n\n` +
+        `${JSON.stringify(extractedData, null, 2)}\n\nExplain this to the patient.`,
+    });
+  }
+}
+
+/**
  * Picks the provider from `AI_PROVIDER` (default "gemini"). Called once, at
  * the top of the handler — NOT at module scope — so a missing
  * `ANTHROPIC_API_KEY` only throws if "claude" is actually selected at
@@ -460,7 +630,24 @@ function getProvider(): DocPipelineProvider {
     return new ClaudeProvider(apiKey);
   }
 
-  throw new Error(`Unknown AI_PROVIDER "${selected}". Expected "gemini" or "claude".`);
+  if (selected === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error('AI_PROVIDER is "openrouter" but OPENROUTER_API_KEY is not set.');
+    }
+    const model = process.env.OPENROUTER_MODEL;
+    if (!model) {
+      throw new Error(
+        'AI_PROVIDER is "openrouter" but OPENROUTER_MODEL is not set. Pick a model that ' +
+          'accepts images from https://openrouter.ai/models?modality=text+image-%3Etext',
+      );
+    }
+    return new OpenRouterProvider(apiKey, model);
+  }
+
+  throw new Error(
+    `Unknown AI_PROVIDER "${selected}". Expected "gemini", "claude" or "openrouter".`,
+  );
 }
 
 // ============================================================================
