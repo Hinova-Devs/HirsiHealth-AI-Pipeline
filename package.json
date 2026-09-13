@@ -1,9 +1,10 @@
 {
   "name": "hersihealth-ai-pipeline",
   "version": "1.0.0",
+  "type": "module",
   "description": "Medplum webhook that classifies, extracts and explains patient documents.",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.check.json",
+    "typecheck": "tsc --noEmit",
     "setup-subscription": "node --env-file=.env --experimental-strip-types scripts/setup-subscription.ts",
     "check": "node --experimental-strip-types scripts/extract.check.ts"
   },
@@ -14,7 +15,8 @@
     "@anthropic-ai/sdk": "^0.124.0",
     "@google/genai": "^2.21.0",
     "@medplum/core": "^5.1.37",
-    "@medplum/fhirtypes": "^5.1.37"
+    "@medplum/fhirtypes": "^5.1.37",
+    "openai": "^7.15.0"
   },
   "devDependencies": {
     "@vercel/node": "^12.0.2",

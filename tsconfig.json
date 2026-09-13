@@ -1,0 +1,41 @@
+{
+  // Read by the editor, by `npm run typecheck`, AND by @vercel/node at build
+  // time (it walks up from api/ looking for exactly this filename). The module
+  // settings are therefore not a free choice.
+  //
+  // History: this file used to be called tsconfig.check.json purely to hide it
+  // from Vercel, because it said "module": "preserve" — which emits real ESM
+  // import statements into a package that had no "type": "module", killing the
+  // function at cold start with "Cannot use import statement outside a
+  // module". Hiding it fixed the deploy and broke the editor, which then
+  // flagged every `.ts` import as TS5097.
+  //
+  // The actual fix is to stop straddling the two module systems. package.json
+  // now declares "type": "module", so "nodenext" here means ESM in, ESM out,
+  // consistently for Vercel, `tsc`, and `node --experimental-strip-types`. It
+  // also makes the ESM-only dependencies (@google/genai, @medplum/fhirtypes)
+  // type-check honestly instead of relying on Node's require(esm) fallback.
+  //
+  // If you ever remove "type": "module" from package.json, this must go back
+  // to CommonJS in the same commit.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    // lib/ is imported with explicit .ts specifiers: scripts/*.check.ts run
+    // under `node --experimental-strip-types`, which resolves ESM specifiers
+    // literally and rejects extensionless relative imports.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["api", "lib", "scripts"]
+}

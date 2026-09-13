@@ -3,10 +3,19 @@
  *
  * Medplum posts a `DocumentReference` here (via a Subscription with
  * `channel.payload = application/fhir+json`) whenever a patient uploads a
- * document. This handler runs a three-stage pipeline — classify, extract,
- * explain — against the underlying file, then writes a draft `Task` back to
- * Medplum so the patient can review the AI's reading before anything
- * clinical is trusted.
+ * document. This handler runs the pipeline — classify, then extract against a
+ * schema chosen by that classification, then explain — against the underlying
+ * file, runs the code-level plausibility checks in `lib/review.ts` over the
+ * result, and writes a draft `Task` back to Medplum so the patient can review
+ * the AI's reading before anything clinical is trusted.
+ *
+ * Nothing here writes a clinical resource. `Observation` / `Condition` /
+ * `DiagnosticReport` are created only from a `ConfirmedExtraction`, after a
+ * human has confirmed — see `lib/review.ts`.
+ *
+ * Shared pieces live in `lib/`: `schemas.ts` (document types, per-type JSON
+ * Schemas, the provider contract), `glm.ts` (the Z.ai provider with its
+ * retry/backoff), `review.ts` (the draft/confirmed contract and the flags).
  *
  * See the numbered STEP comments in `handler()` for the request lifecycle.
  */
@@ -18,223 +27,17 @@ import type { DocumentReference, Task, TaskOutput } from '@medplum/fhirtypes';
 import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 
-// ============================================================================
-// Document types + JSON Schemas
-//
-// These are plain, portable JSON Schema objects (lowercase `type` strings),
-// reused verbatim by both providers below:
-//  - Gemini's `GenerateContentConfig.responseSchema` field is typed
-//    `SchemaUnion = Schema | unknown` in the current @google/genai SDK, so
-//    these plain JSON Schema objects are assignable with no cast needed.
-//  - Claude's `Tool.InputSchema` is `{ type: 'object'; properties?: unknown;
-//    required?: string[]; [k: string]: unknown }` — structurally open enough
-//    to accept these objects directly, modulo a top-level cast.
-//
-// Every extracted field carries its own "confidence" (high/medium/low)
-// because source documents are often handwritten, partially illegible, or
-// mixed Somali/English — the patient-review UI needs to know which fields
-// to flag, not just get a single blended confidence.
-// ============================================================================
-
-export type DocumentType =
-  | 'lab_result'
-  | 'prescription'
-  | 'diagnosis'
-  | 'imaging_report'
-  | 'vaccination_card'
-  | 'unclear';
-
-const CONFIDENCE_ENUM = ['high', 'medium', 'low'];
-
-/** Schema for `provider.classify()`. Shared by both providers. */
-const classifySchema = {
-  type: 'object',
-  properties: {
-    document_type: {
-      type: 'string',
-      enum: ['lab_result', 'prescription', 'diagnosis', 'imaging_report', 'vaccination_card', 'unclear'],
-    },
-    readable: {
-      type: 'boolean',
-      description: 'False if the document is too blurry, dark, cropped, or incomplete to extract data from.',
-    },
-    reason_if_unreadable: {
-      type: 'string',
-      description: 'Short reason the document could not be read, only present when readable is false.',
-    },
-  },
-  required: ['document_type', 'readable'],
-};
-
-const labResultSchema = {
-  type: 'object',
-  properties: {
-    test_date: { type: 'string', description: 'ISO 8601 date if determinable' },
-    results: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          test_name: { type: 'string' },
-          value: { type: 'string' },
-          unit: { type: 'string' },
-          reference_range: { type: 'string' },
-          confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-        },
-        required: ['test_name', 'value', 'confidence'],
-      },
-    },
-    overall_confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-  },
-  required: ['results', 'overall_confidence'],
-};
-
-const prescriptionSchema = {
-  type: 'object',
-  properties: {
-    prescriber_name: { type: 'string', description: 'Name of the prescribing clinician, if legible' },
-    prescription_date: { type: 'string', description: 'ISO 8601 date if determinable' },
-    medications: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          medication_name: { type: 'string' },
-          dosage: { type: 'string', description: 'e.g. "500mg"' },
-          frequency: { type: 'string', description: 'e.g. "twice daily"' },
-          route: { type: 'string', description: 'e.g. "oral", "topical"' },
-          duration: { type: 'string', description: 'e.g. "7 days"' },
-          quantity: { type: 'string' },
-          refills: { type: 'string' },
-          confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-        },
-        required: ['medication_name', 'confidence'],
-      },
-    },
-    overall_confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-  },
-  required: ['medications', 'overall_confidence'],
-};
-
-const diagnosisSchema = {
-  type: 'object',
-  properties: {
-    diagnosis_date: { type: 'string', description: 'ISO 8601 date if determinable' },
-    clinician_name: { type: 'string' },
-    diagnoses: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          condition_name: { type: 'string' },
-          icd10_code: {
-            type: 'string',
-            description:
-              'Only include if an ICD-10 code is literally printed on the document. ' +
-              'Never infer, guess, or generate a code that is not explicitly written.',
-          },
-          notes: { type: 'string' },
-          confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-        },
-        required: ['condition_name', 'confidence'],
-      },
-    },
-    overall_confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-  },
-  required: ['diagnoses', 'overall_confidence'],
-};
-
-const imagingReportSchema = {
-  type: 'object',
-  properties: {
-    study_date: { type: 'string', description: 'ISO 8601 date if determinable' },
-    modality: { type: 'string', description: 'e.g. "X-ray", "MRI", "CT", "Ultrasound"' },
-    body_region: { type: 'string', description: 'e.g. "chest", "left knee"' },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          description: { type: 'string' },
-          confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-        },
-        required: ['description', 'confidence'],
-      },
-    },
-    impression: {
-      type: 'string',
-      description: "The radiologist's summary impression, transcribed verbatim if present",
-    },
-    radiologist_name: { type: 'string' },
-    overall_confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-  },
-  required: ['findings', 'overall_confidence'],
-};
-
-const vaccinationCardSchema = {
-  type: 'object',
-  properties: {
-    vaccinations: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          vaccine_name: { type: 'string' },
-          dose_number: { type: 'string', description: 'e.g. "1", "2", "booster"' },
-          date_administered: { type: 'string', description: 'ISO 8601 date if determinable' },
-          lot_number: { type: 'string' },
-          administering_facility: { type: 'string' },
-          confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-        },
-        required: ['vaccine_name', 'confidence'],
-      },
-    },
-    overall_confidence: { type: 'string', enum: CONFIDENCE_ENUM },
-  },
-  required: ['vaccinations', 'overall_confidence'],
-};
-
-/** Extraction schema keyed by document type. `unclear` has no schema — it never reaches extract(). */
-const EXTRACTION_SCHEMAS: Partial<Record<DocumentType, Record<string, unknown>>> = {
-  lab_result: labResultSchema,
-  prescription: prescriptionSchema,
-  diagnosis: diagnosisSchema,
-  imaging_report: imagingReportSchema,
-  vaccination_card: vaccinationCardSchema,
-};
-
-/** Verbatim system instruction for `explain()` — never let either provider stray from this. */
-const EXPLAIN_SYSTEM_INSTRUCTION =
-  'You are explaining a medical document to a patient in plain language. Describe what the ' +
-  'values or contents generally mean. You must NEVER provide a diagnosis, tell the patient ' +
-  'whether a result is dangerous, or recommend a treatment. If a value looks abnormal, say ' +
-  'only that it falls outside the typical reference range and that they should discuss it ' +
-  'with their doctor. Always end with a reminder to consult their healthcare provider. Keep ' +
-  'it under 150 words and avoid medical jargon.';
-
-// ============================================================================
-// Provider abstraction
-// ============================================================================
-
-export interface ClassifyResult {
-  document_type: DocumentType;
-  readable: boolean;
-  reason_if_unreadable?: string;
-}
-
-export interface DocPipelineProvider {
-  classify(fileBase64: string, mimeType: string): Promise<ClassifyResult>;
-  extract(fileBase64: string, mimeType: string, documentType: string): Promise<Record<string, unknown>>;
-  explain(fileBase64: string, mimeType: string, extractedData: Record<string, unknown>): Promise<string>;
-}
-
-function schemaFor(documentType: string): Record<string, unknown> {
-  const schema = EXTRACTION_SCHEMAS[documentType as DocumentType];
-  if (!schema) {
-    throw new Error(`No extraction schema registered for document type "${documentType}".`);
-  }
-  return schema;
-}
+import {
+  classifySchema,
+  parseJsonObject,
+  schemaFor,
+  schemaPrompt,
+  EXPLAIN_SYSTEM_INSTRUCTION,
+  type ClassifyResult,
+  type DocPipelineProvider,
+} from '../lib/schemas.ts';
+import { GlmProvider, DEFAULT_ZAI_MODEL } from '../lib/glm.ts';
+import { modelConfidenceOf, reviewFlags, type DraftExtraction } from '../lib/review.ts';
 
 // ── Gemini ───────────────────────────────────────────────────────────────
 
@@ -435,45 +238,6 @@ class ClaudeProvider implements DocPipelineProvider {
   }
 }
 
-/**
- * Pulls the first JSON object out of a model response.
- *
- * Exported for the self-check. Models that honour `response_format` return
- * bare JSON, but weaker ones (the free tier especially) wrap it in a ```json
- * fence or bracket it with prose, and a hard JSON.parse would throw on both.
- */
-export function parseJsonObject(text: string): Record<string, unknown> {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const body = (fenced ? fenced[1] : text).trim();
-
-  // Slice to the outermost braces so leading/trailing commentary is dropped.
-  const start = body.indexOf('{');
-  const end = body.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error(`Model did not return a JSON object. Got: ${text.slice(0, 200)}`);
-  }
-
-  // The slice always starts with { and ends with }, so JSON.parse either
-  // throws or yields an object — no further shape check is reachable. A model
-  // that wrapped its answer in an array lands here as the inner object, which
-  // is the recovery we want.
-  return JSON.parse(body.slice(start, end + 1)) as Record<string, unknown>;
-}
-
-/**
- * Restates the JSON Schema in the prompt.
- *
- * `response_format` is only a hint here — OpenRouter routes to whichever
- * provider is cheapest/available, and some reject it outright. Putting the
- * schema in the text means the model still knows the exact shape when the hint
- * had to be dropped.
- */
-function schemaPrompt(schema: Record<string, unknown>): string {
-  return (
-    'Reply with a single JSON object and nothing else - no prose, no markdown ' +
-    `fences. It must match this JSON Schema:\n\n${JSON.stringify(schema)}`
-  );
-}
 
 /**
  * OpenRouter, via its OpenAI-compatible chat-completions endpoint.
@@ -643,13 +407,21 @@ class OpenRouterProvider implements DocPipelineProvider {
 }
 
 /**
- * Picks the provider from `AI_PROVIDER` (default "gemini"). Called once, at
- * the top of the handler — NOT at module scope — so a missing
- * `ANTHROPIC_API_KEY` only throws if "claude" is actually selected at
- * runtime, never merely on import.
+ * Picks the provider from `AI_PROVIDER` (default "glm"). Called once, at the
+ * top of the handler — NOT at module scope — so a missing `ANTHROPIC_API_KEY`
+ * only throws if "claude" is actually selected at runtime, never merely on
+ * import.
  */
 function getProvider(): DocPipelineProvider {
-  const selected = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
+  const selected = (process.env.AI_PROVIDER || 'glm').toLowerCase();
+
+  if (selected === 'glm') {
+    const apiKey = process.env.ZAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('AI_PROVIDER is "glm" but ZAI_API_KEY is not set.');
+    }
+    return new GlmProvider(apiKey, process.env.ZAI_MODEL || DEFAULT_ZAI_MODEL);
+  }
 
   if (selected === 'gemini') {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -683,7 +455,7 @@ function getProvider(): DocPipelineProvider {
   }
 
   throw new Error(
-    `Unknown AI_PROVIDER "${selected}". Expected "gemini", "claude" or "openrouter".`,
+    `Unknown AI_PROVIDER "${selected}". Expected "glm", "gemini", "claude" or "openrouter".`,
   );
 }
 
@@ -846,40 +618,71 @@ console.log('[extract] payload type:', typeof req.body, 'resourceType:', (payloa
     // STEP 5: classify + quality gate.
     const classification = await provider.classify(fileBase64, contentType);
 
+    // Two different dead ends, and they need two different asks of the
+    // patient. A blurry photo can be retaken; a document the model could not
+    // place cannot be fixed by a better photo, and forcing one of the
+    // per-type schemas onto it would invent a shape the page does not have.
     if (!classification.readable || classification.document_type === 'unclear') {
+      const codeText = classification.readable
+        ? 'Categorize manually'
+        : 'Retake photo';
       await createReviewTask(medplum, {
         documentReferenceId,
         subjectReference,
         status: 'ready',
-        codeText: 'Retake photo',
+        codeText,
         output: [
           taskOutput('documentType', classification.document_type),
-          ...(classification.reason_if_unreadable
-            ? [taskOutput('reason', classification.reason_if_unreadable)]
-            : []),
+          taskOutput(
+            'reason',
+            classification.reason_if_unreadable ??
+              (classification.readable
+                ? "We couldn't confidently identify this document type. Please categorize it and enter any details yourself."
+                : 'The photo was too unclear to read. Please retake it in better light.'),
+          ),
         ],
       });
-      res.status(200).json({ ok: true, unreadable: true });
+      res.status(200).json({ ok: true, unclassified: true });
       return;
     }
 
     // STEP 6: extract + explain (only ever runs on readable, classified input).
     const extractedData = await provider.extract(fileBase64, contentType, classification.document_type);
     const explanation = await provider.explain(fileBase64, contentType, extractedData);
-    const overallConfidence =
-      typeof extractedData.overall_confidence === 'string' ? extractedData.overall_confidence : 'low';
+
+    // STEP 6b: the code-level defences. These do not correct the model — they
+    // decide which fields the confirmation screen must make the patient look
+    // at. See lib/review.ts for why each one exists.
+    const draft: DraftExtraction = {
+      documentReferenceId,
+      documentType: classification.document_type,
+      extractedData,
+      explanation,
+      modelConfidence: modelConfidenceOf(extractedData),
+      flags: reviewFlags(extractedData),
+    };
 
     // STEP 7: write the draft Task, then mark the DocumentReference preliminary.
+    //
+    // This Task is the staging area, and it is as far as the pipeline goes.
+    // No Observation, Condition or DiagnosticReport is written here: those are
+    // created only after a human confirms, from a ConfirmedExtraction.
     await createReviewTask(medplum, {
       documentReferenceId,
       subjectReference,
       status: 'ready',
       codeText: 'Review AI-extracted document data',
       output: [
-        taskOutput('documentType', classification.document_type),
-        taskOutput('extractedData', JSON.stringify(extractedData)),
-        taskOutput('explanation', explanation),
-        taskOutput('confidence', overallConfidence),
+        taskOutput('documentType', draft.documentType),
+        taskOutput('extractedData', JSON.stringify(draft.extractedData)),
+        taskOutput('explanation', draft.explanation),
+        taskOutput('confidence', draft.modelConfidence),
+        taskOutput('reviewFlags', JSON.stringify(draft.flags)),
+        // What the model literally said, kept apart from anything the patient
+        // later approves. Audit/debug only — never read this back as data.
+        ...(provider instanceof GlmProvider
+          ? [taskOutput('rawModelResponse', JSON.stringify(provider.transcript).slice(0, 100_000))]
+          : []),
       ],
     });
     await patchDocStatus(medplum, documentReferenceId, 'preliminary');
@@ -896,9 +699,16 @@ console.log('[extract] payload type:', typeof req.body, 'resourceType:', (payloa
         documentReferenceId,
         subjectReference,
         status: 'failed',
-        codeText: `Extraction failed: ${message}`,
+        // Patient-facing. The technical cause goes in an output, not in the
+        // title of a card someone reads on their phone.
+        codeText: 'AI processing unavailable — please enter details manually',
+        output: [taskOutput('error', message.slice(0, 1000))],
       });
-      await patchDocStatus(medplum, documentReferenceId, 'entered-in-error');
+      // Deliberately NOT patching docStatus here. `entered-in-error` says the
+      // *document* should never have existed; what actually failed is the
+      // extraction. The upload stands on its own — the Binary is the record,
+      // the AI reading was only ever an enhancement — so a failed extraction
+      // must not hide a perfectly good scan from the patient's wallet.
     } catch (cleanupErr) {
       // Best-effort: we already logged the root cause above; a failure here
       // just means the Task/docStatus bookkeeping didn't land.
